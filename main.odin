@@ -205,6 +205,14 @@ Diamond :: struct {
     size: rl.Vector2
 }
 
+get_entity :: proc(game: ^Game, id: i32) -> (^Entity, bool) {
+    for &e in game.entities {
+        if e.id == id do return &e, true
+    }
+
+    return {}, false
+}
+
 save_to_file :: proc(filepath: string, game: ^Game) {
     file, err := os.open(filepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
     if err != os.ERROR_NONE {
@@ -318,7 +326,8 @@ get_user_input :: proc(game: ^Game, camera: ^rl.Camera2D) {
 
     // shoot projectile
     if rl.IsMouseButtonPressed(.LEFT) {
-        origin := game.entities[game.self].pos
+        origin_e, ok := get_entity(game, game.self)
+        origin := origin_e.pos
         mouse_pos := rl.GetMousePosition()
         mouse_pos = rl.GetScreenToWorld2D(mouse_pos, camera^)
         // fmt.println(mouse_pos)
@@ -337,10 +346,11 @@ get_user_input :: proc(game: ^Game, camera: ^rl.Camera2D) {
     }
 
     move = move * rl.GetFrameTime() * 400
-    move = limit_player_to_zone(&game.entities[game.self], move)
+    e, ok := get_entity(game, game.self)
+    move = limit_player_to_zone(e, move)
 
-    new_pos := game.entities[game.self].pos + move
-    game.entities[game.self].pos = new_pos
+    new_pos := e.pos + move
+    e.pos = new_pos
 
     if move != {} && game.hosting == .SERVER {
         broadcast_update(game, .ENTITY_MOVE, EntityMove{game.self, new_pos.x, new_pos.y})
@@ -363,7 +373,8 @@ draw_entity :: proc(game: ^Game, e: ^Entity, alpha: u8 = 255) {
             {
                 draw_point: rl.Vector2
                 if(b.has_target) {
-                    draw_point = game.entities[b.target_id].pos
+                    that, ok := get_entity(game, b.target_id)
+                    draw_point = that.pos
                 }
                 else {
                     cos := math.cos_f32(b.rotation)
@@ -396,7 +407,8 @@ draw_entity :: proc(game: ^Game, e: ^Entity, alpha: u8 = 255) {
             {
                 draw_point: rl.Vector2
                 if(b.has_target) {
-                    draw_point = game.entities[b.target_id].pos
+                    that, ok := get_entity(game, b.target_id)
+                    draw_point = that.pos
                 }
                 else {
                     draw_point = e.pos + rl.Vector2{0, 100}
@@ -525,9 +537,6 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
             // look and shoot
             {
                 if b.has_target {
-                    // diff = game.entities[b.target].pos - e.pos
-                    // b.rotation = // get rotation angle of diff 
-
                     return
                 }
 
@@ -578,7 +587,8 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
             {
                 if game.hosting == .CLIENT do return
                 if b.has_target {
-                    e.pos += normalize_vector(game.entities[b.target_id].pos - e.pos) * rl.GetFrameTime() * 20
+                    that, ok := get_entity(game, b.target_id)
+                    e.pos += normalize_vector(that.pos - e.pos) * rl.GetFrameTime() * 20
                     broadcast_update(game, .ENTITY_MOVE, EntityMove{e.id, e.pos.x, e.pos.y})
                 }
                 else {
@@ -940,7 +950,8 @@ main :: proc() {
                     }
 
                     if game.self >= 0 {
-                        player_pos := game.entities[game.self].pos
+                        player, ok := get_entity(&game, game.self)
+                        player_pos := player.pos
                         camera.target = player_pos// + {20, 20}
 
                         // camera.zoom = math.exp_f32(math.log2_f32(camera.zoom) + f32(rl.GetMouseWheelMove()*0.1));
@@ -1031,23 +1042,32 @@ handle_net_recv :: proc(net_data: NetData, game: ^Game) {
             }
         case EntityMove:
 
-            if int(f.id) >= len(game.entities) {
-                fmt.println("Entity with id '%d' does not exist", f.id)
+            e, ok := get_entity(game, f.id)
+
+            if !ok {
+                // fmt.printfln("Entity with id '%d' does not exist", f.id)
                 return
             }
 
             if game.hosting == .CLIENT && game.state == .PLAYING {
-                game.entities[f.id].pos.x = f.x
-                game.entities[f.id].pos.y = f.y
+                e.pos.x = f.x
+                e.pos.y = f.y
             }
             else if game.hosting == .SERVER && game.state == .PLAYING {
                 // TODO: check that sockets are same ID as player ID
-                game.entities[f.id].pos.x = f.x
-                game.entities[f.id].pos.y = f.y
+                e.pos.x = f.x
+                e.pos.y = f.y
             }
         case EntityLifetime:
             if game.hosting == .CLIENT && game.state == .PLAYING {
-                game.entities[f.id].lifetime = f.lifetime
+                e, ok := get_entity(game, f.id)
+
+                if !ok {
+                    fmt.printfln("Entity with id '%d' does not exist", f.id)
+                    return
+                }
+
+                e.lifetime = f.lifetime
             }
         case AssignPlayer:
             if game.hosting == .CLIENT {
@@ -1055,7 +1075,14 @@ handle_net_recv :: proc(net_data: NetData, game: ^Game) {
             }
         case NetEntityBehaviour:
             if game.hosting == .CLIENT {
-                game.entities[f.id].behaviour = f.behaviour
+                e, ok := get_entity(game, f.id)
+
+                if !ok {
+                    fmt.printfln("Entity with id '%d' does not exist", f.id)
+                    return
+                }
+
+                e.behaviour = f.behaviour
             }
         case Ack:
             ack_from_queue(f.id, &game.send_queue)
