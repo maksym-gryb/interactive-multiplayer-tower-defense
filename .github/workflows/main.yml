@@ -1,0 +1,44 @@
+name: Build Odin Project
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang make git curl unzip
+
+      - name: Install Odin compiler
+        run: |
+          git clone https://github.com/odin-lang/Odin.git --depth=1
+          cd Odin
+          make release
+          echo "$(pwd)/" >> $GITHUB_PATH
+
+      - name: Build project
+        run: |
+          odin build src -o:speed -out:my_program
+
+      - name: Upload binary as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: my_program
+          path: ./my_program
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          files: ./my_program
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
