@@ -799,29 +799,31 @@ limit_player_to_zone :: proc(e: ^Entity, delta_p: rl.Vector2) -> rl.Vector2 {
 }
 
 handle_recv :: proc(game: ^Game) {
-    frame, endpoint, ok := recv_struct(game.sock)
+    for {
+        frame, endpoint, ok := recv_struct(game.sock)
 
-    if !ok {
-        // ignore, maybe no data, maybe error
-        return
-    }
-
-    // fmt.printfln("received: %dbytes", size_of(frame.frame))
-
-    switch game.hosting{
-        case .SINGLE:
-        case .CLIENT: {
-            if endpoint != game.server_endpoint {
-                fmt.println("[ERR] Received from wrong endpoint")
-                return
-            }
+        if !ok {
+            // ignore, maybe no data, maybe error
+            return
         }
-        case .SERVER:
-            // TODO: re-send to all other clients
+
+        // fmt.printfln("received: %dbytes", size_of(frame.frame))
+
+        switch game.hosting{
+            case .SINGLE:
+            case .CLIENT: {
+                if endpoint != game.server_endpoint {
+                    fmt.println("[ERR] Received from wrong endpoint")
+                    return
+                }
+            }
+            case .SERVER:
+                // TODO: re-send to all other clients
+        }
+
+
+        handle_net_recv(frame, game)
     }
-
-
-    handle_net_recv(frame, game)
 }
 
 send_init_ack :: proc(game: ^Game) {
