@@ -14,5 +14,33 @@
             "stopOnEntry": false,
             "preLaunchTask": "build-odin-debug"
         },
+        {
+            "name": "debug-server",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/app",
+            "args": ["s"],
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "preLaunchTask": "build-odin-debug"
+        },
+        {
+            "name": "debug-client",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/app",
+            "args": ["c"],
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "preLaunchTask": "build-odin-debug"
+        },
     ],
+    "compounds": [
+        {
+            "name": "Server/Client",
+            "configurations": ["debug-server", "debug-client"],
+            "preLaunchTask": "build-odin-debug",
+            "stopAll": true
+        }
+    ]
 }

@@ -44,6 +44,8 @@ PLAYER_SPAWN_POINT :: rl.Vector2{500, 500}
 
 LOCALHOST :: "127.0.0.1"
 
+explosion_sound: rl.Sound
+
 normalize_vector :: proc(v: rl.Vector2) -> rl.Vector2 {
     return v / math.sqrt(v.x*v.x + v.y*v.y)
 }
@@ -71,7 +73,8 @@ editor_entities := []Entity{
     Entity{0, {800, 400}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY/*, 0, 0*/},
     Entity{0, {400, 400}, {}, rl.MAGENTA, LookAndShoot{1, 0, false}, Circle{25}, true, 1, .ENEMY},
     Entity{0, {}, {}, rl.GREEN, MiningResource{}, Diamond{{90, 90}}, true, 1, .NONE},
-    Entity{0, {}, {}, rl.BLUE, PickupResource{}, Diamond{{8, 8}}, true, 1, .NONE}
+    Entity{0, {}, {}, rl.BLUE, PickupResource{}, Diamond{{8, 8}}, true, 1, .NONE},
+    Entity{0, {}, {}, rl.PINK, DefensePoint{}, Rectangle{{100, 100}}, true, 10, .NONE}
 }
 
 Game :: struct {
@@ -149,7 +152,7 @@ EntityBehaviour :: union {
     ZombieAttack,
     MiningResource,
     PickupResource,
-    // DefensePoint,
+    DefensePoint,
     // Gate,
     // SpawnPoint
 }
@@ -274,6 +277,10 @@ editor_input :: proc(game: ^Game, camera: rl.Camera2D) {
     }
     if rl.IsKeyPressed(.FOUR) { // resource
         game.editor_selected_entity = 3
+        game.is_editor_entity_selected = true
+    }
+    if rl.IsKeyPressed(.FIVE) { // defense point
+        game.editor_selected_entity = 5
         game.is_editor_entity_selected = true
     }
 
@@ -420,6 +427,8 @@ draw_entity :: proc(game: ^Game, e: ^Entity, alpha: u8 = 255) {
             // nothing
         case PickupResource:
             // nothing
+        case DefensePoint:
+            // nothing
     }
 
     color := e.color
@@ -437,12 +446,14 @@ draw_entity :: proc(game: ^Game, e: ^Entity, alpha: u8 = 255) {
     }
 }
 
-create_pickup_resource :: proc(game: ^Game, pos: rl.Vector2) {
+create_pickup_resource :: proc(game: ^Game, pos: rl.Vector2) -> Entity {
     pickup := editor_entities[4]
     pickup.pos = pos
     pickup.id = i32(len(game.entities))
 
     append(&game.entities, pickup)
+
+    return pickup
 }
 
 collect_pickup_resource :: proc(game: ^Game) {
@@ -501,11 +512,14 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                                             that_rect := rl.Rectangle{that.pos.x, that.pos.y, that_shape.size.x, that_shape.size.y}
                                             if rl.CheckCollisionCircleRec(e.pos, e.shape.(Circle).radius, that_rect) {
                                                 pos := e.pos - e.vel * 7
-                                                create_pickup_resource(game, pos)
+                                                pickup_entity := create_pickup_resource(game, pos)
+                                                broadcast_update(game, .ENTITY_LOAD, pickup_entity)
                                                 e.lifetime = false
+                                                broadcast_update(game, .ENTITY_LIFETIME, EntityLifetime{e.id, e.lifetime})
                                             }
                                         }
                                     case PickupResource:
+                                    case DefensePoint:
                                 }
                             case Rectangle:// ignore
                             case Circle:
@@ -520,13 +534,17 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                                     continue
                                 case PickupResource:
                                     continue
+                                case DefensePoint:
+                                    continue
                             }
 
                             if rl.CheckCollisionCircles(e.pos, e.shape.(Circle).radius, that.pos, that.shape.(Circle).radius) {
                                 if(e.faction != that.faction && that.faction != .NONE) {
                                     that.behaviour = DeathAnimation{that.pos, 0, 0}
+                                    rl.PlaySound(explosion_sound)
                                     broadcast_update(game, .ENTITY_BEHAVIOUR, NetEntityBehaviour{that.id, that.behaviour})
                                     e.lifetime = false
+                                    broadcast_update(game, .ENTITY_LIFETIME, EntityLifetime{e.id, e.lifetime})
                                 }
                             }
                         }
@@ -593,10 +611,19 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                 }
                 else {
                     for &p in game.entities {
-                        if p.faction == .PLAYER {
-                            b.target_id = p.id
-                            b.has_target = true
-                            return
+                        if p.lifetime == false do continue
+
+                        switch &t in p.behaviour {
+                            case EBType:
+                            case LookAndShoot:
+                            case DeathAnimation:
+                            case ZombieAttack:
+                            case MiningResource:
+                            case PickupResource:
+                            case DefensePoint:
+                                b.target_id = p.id
+                                b.has_target = true
+                                return
                         }
                     }
                 }
@@ -625,8 +652,12 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                     case ZombieAttack:
                     case MiningResource:
                     case PickupResource: 
+                    case DefensePoint:
                 }
             }
+        }
+        case DefensePoint: {
+            // TODO
         }
     }
 }
@@ -738,7 +769,7 @@ execute_console_command :: proc(game: ^Game) {
     }
     else if strings.equal_fold(command, "P") {
         fmt.println("[CMD] mode: NORMAL")
-        game.mode = .NORMAL
+        game.mode = .NORMAL 
     }
     else if strings.equal_fold(command, "E") {
         fmt.println("[CMD] mode: EDITOR")
@@ -791,11 +822,14 @@ start_client :: proc(game: ^Game, ip_addr: string) {
 limit_player_to_zone :: proc(e: ^Entity, delta_p: rl.Vector2) -> rl.Vector2 {
     new_pos := e.pos + delta_p
 
-    if rl.CheckCollisionPointRec(new_pos, PLAYER_ZONE){
-        return delta_p
-    }
+    ret_delta_p := delta_p
 
-    return {}
+    if new_pos.x >= PLAYER_ZONE.x + PLAYER_ZONE.width do ret_delta_p.x = 0
+    if new_pos.x <= PLAYER_ZONE.x do ret_delta_p.x = 0
+    if new_pos.y >= PLAYER_ZONE.y + PLAYER_ZONE.height do ret_delta_p.y = 0
+    if new_pos.y <= PLAYER_ZONE.y do ret_delta_p.y = 0
+
+    return ret_delta_p
 }
 
 handle_recv :: proc(game: ^Game) {
@@ -807,7 +841,7 @@ handle_recv :: proc(game: ^Game) {
             return
         }
 
-        // fmt.printfln("received: %dbytes", size_of(frame.frame))
+        // fmt.printfln("received: %d bytes", size_of(frame.frame))
 
         switch game.hosting{
             case .SINGLE:
@@ -857,13 +891,29 @@ send_game_state_to_client :: proc(game: ^Game, client: net.Endpoint) {
 
 main :: proc() {
     game := Game{{}, .SINGLE, 0, .MAIN_MENU, -1, .NORMAL, make([dynamic]Entity, 0, 0), make([dynamic]string, 0, 0), "", false, 0, false, 0, {}, false, 0, make([dynamic]ClientRef, 0, 0), make([dynamic]SendQueue, 0, 0)}
-    // TEST
-    // game.state = .LOADING
-    // END TEST
+
+    if len(os.args) > 1 {
+        switch os.args[1] {
+            case "c":
+                start_client(&game, LOCALHOST)
+            case "s":
+                host_server(&game)
+            case:
+                fmt.printfln("Command '%s' cannot be found. Crashing out!", os.args[1])
+        }
+    }
 
     rl.SetConfigFlags({rl.ConfigFlag.WINDOW_RESIZABLE})
     rl.InitWindow(1280, 720, "Top Down Shooter")
     defer rl.CloseWindow()
+
+    rl.InitAudioDevice()
+    defer rl.CloseAudioDevice()
+
+    explosion_sound = rl.LoadSound("assets/explosion.mp3")
+    defer rl.UnloadSound(explosion_sound)
+
+    rl.SetTargetFPS(122)
 
     explosion_texture = rl.LoadTexture(explosion_texture_path)
     explosion_texture_frames = u32(explosion_texture.width / 64)
@@ -1085,6 +1135,23 @@ handle_net_recv :: proc(net_data: NetData, game: ^Game) {
                 }
 
                 e.behaviour = f.behaviour
+                switch &b in e.behaviour {
+                    case EBType:
+                        // Handle EBType if needed, or leave empty if no action required
+                    case LookAndShoot:
+                        // Handle LookAndShoot if needed, or leave empty if no action required
+                    case DeathAnimation:
+                        // NOTE: temporarily disabled due to testing both client and server on same PC
+                        // rl.PlaySound(explosion_sound)
+                    case ZombieAttack:
+                        // Handle ZombieAttack if needed, or leave empty if no action required
+                    case MiningResource:
+                        // Handle MiningResource if needed, or leave empty if no action required
+                    case PickupResource:
+                        // Handle PickupResource if needed, or leave empty if no action required
+                    case DefensePoint:
+                        // Handle DefensePoint if needed, or leave empty if no action required
+                }
             }
         case Ack:
             ack_from_queue(f.id, &game.send_queue)
