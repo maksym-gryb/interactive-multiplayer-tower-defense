@@ -835,11 +835,11 @@ execute_console_command :: proc(game: ^Game) {
     game.is_console_open = false
 }
 
-host_server :: proc(game: ^Game) {
+host_server :: proc(game: ^Game, ip: string) {
     ok: bool
     game.hosting = .SERVER
 
-    game.sock, ok = init_udp_server(LOCALHOST, PORT)
+    game.sock, ok = init_udp_server(ip, PORT)
     if !ok {
         fmt.println("[ERR] Cannot init udp server")
         game.state = .MAIN_MENU
@@ -956,7 +956,7 @@ main :: proc() {
     if len(os.args) > 1 {
         switch os.args[1] {
             case "s":
-                host_server(&game)
+                host_server(&game, LOCALHOST)
                 rl.SetWindowPosition(10, 10)
             case "c":
                 start_client(&game, LOCALHOST)
@@ -1017,10 +1017,10 @@ main :: proc() {
 
                     mu.layout_row(mctx, { 90, 90, 150 }, 0)
                     if .SUBMIT in mu.button(mctx, "HOST") {
-                        host_server(&game)
+                        host_server(&game, "0.0.0.0")
                     }
                     if .SUBMIT in mu.button(mctx, "CONNECT") {
-                        start_client(&game, LOCALHOST)//cstring_to_string(ip4_input_text))
+                        start_client(&game, cstring_to_string(ip4_input_text))
                     }
                     if .SUBMIT in mu.button(mctx, "SINGLE PLAYER") {
                         game.hosting = .SINGLE
