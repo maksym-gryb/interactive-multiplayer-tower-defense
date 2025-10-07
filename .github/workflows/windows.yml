@@ -24,19 +24,23 @@ jobs:
 
       - name: Build project
         run: |
-          odin.exe build . -o:speed -out:my_program.exe
+          odin.exe build . -o:speed -out:app.exe
+
+      - name: Package executable
+        run: |
+          zip app.zip app.exe assets 
 
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: my_program.exe
-          path: ./my_program.exe
+          name: app.zip
+          path: ./app.zip
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          files: ./my_program.exe
+          files: ./app.zip
           token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
