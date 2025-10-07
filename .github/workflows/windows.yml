@@ -28,23 +28,19 @@ jobs:
 
       - name: Package executable
         run: |
-          "C:\Program Files\7-Zip\7z.exe" a app.zip app.exe assets
-
-      - name: Validate files in package
-        run: |
-          "C:\Program Files\7-Zip\7z.exe" l app.zip
+          tar -czf app.tar.gz app.exe assets
 
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app.zip
-          path: ./app.zip
+          name: app.tar.gz
+          path: ./app.tar.gz
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          files: ./app.zip
+          files: ./app.tar.gz
           token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
