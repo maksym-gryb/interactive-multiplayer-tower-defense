@@ -718,6 +718,18 @@ load_level_static :: proc(game: ^Game) {
     append(&game.entities, Entity{i32(len(game.entities)), {800, 400}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
     append(&game.entities, Entity{i32(len(game.entities)), {800, 300}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
     append(&game.entities, Entity{i32(len(game.entities)), {800, 200}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
+
+    id := i32(len(game.entities))
+    spawner := editor_entities[6]
+    spawner.id = id
+    spawner.pos = {-100, -100}
+    append(&game.entities, spawner)
+
+    id = i32(len(game.entities))
+    defense_point := editor_entities[5]
+    defense_point.id = id
+    defense_point.pos = {50, 800}
+    append(&game.entities, defense_point)
 }
 
 create_circle :: proc (world_id: b2.WorldId, pos: b2.Vec2, origin: b2.Vec2, body_type: b2.BodyType, density :f32= 1.0) -> (b2.BodyId, b2.ShapeId) {
@@ -1034,7 +1046,8 @@ main :: proc() {
                         if ok do game.server_endpoint_ack_timeout = 2
                     }
                     else {
-                        load_from_file("game-entities.dat", &game)
+                        // load_from_file("game-entities.dat", &game)
+                        load_level_static(&game)
                         game.state = .PLAYING
                     }
                 }
