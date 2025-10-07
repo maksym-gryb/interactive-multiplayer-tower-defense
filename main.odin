@@ -36,6 +36,8 @@ import "core:encoding/uuid"
 import "rlmu" // from: https://gist.github.com/keenanwoodall/b6f7ecf6346ba3be4842c7d9fd1f372d
 import mu "vendor:microui"
 
+SPAWN_TIMER_TIME :f32: 2
+
 PORT :: 65439
 
 PLAYER_ZONE :: rl.Rectangle{0, 0, 1000, 1000}
@@ -49,6 +51,8 @@ explosion_sound: rl.Sound
 normalize_vector :: proc(v: rl.Vector2) -> rl.Vector2 {
     return v / math.sqrt(v.x*v.x + v.y*v.y)
 }
+
+zone_limit := true
 
 PROJECTILE_SPEED :f32: 4
 
@@ -74,7 +78,8 @@ editor_entities := []Entity{
     Entity{0, {400, 400}, {}, rl.MAGENTA, LookAndShoot{1, 0, false}, Circle{25}, true, 1, .ENEMY},
     Entity{0, {}, {}, rl.GREEN, MiningResource{}, Diamond{{90, 90}}, true, 1, .NONE},
     Entity{0, {}, {}, rl.BLUE, PickupResource{}, Diamond{{8, 8}}, true, 1, .NONE},
-    Entity{0, {}, {}, rl.PINK, DefensePoint{}, Rectangle{{100, 100}}, true, 10, .NONE}
+    Entity{0, {}, {}, rl.PINK, DefensePoint{}, Rectangle{{100, 100}}, true, 10, .NONE},
+    Entity{0, {}, {}, rl.Color{241, 244, 191, 255}, EnemySpawner{}, Circle{80}, true, 10, .NONE},
 }
 
 Game :: struct {
@@ -153,6 +158,7 @@ EntityBehaviour :: union {
     MiningResource,
     PickupResource,
     DefensePoint,
+    EnemySpawner
     // Gate,
     // SpawnPoint
 }
@@ -184,6 +190,10 @@ PickupResource :: struct {
 }
 
 MiningResource :: struct {
+}
+
+EnemySpawner :: struct{
+    spawn_timer: f32
 }
 
 DefensePoint :: struct {
@@ -283,6 +293,10 @@ editor_input :: proc(game: ^Game, camera: rl.Camera2D) {
         game.editor_selected_entity = 5
         game.is_editor_entity_selected = true
     }
+    if rl.IsKeyPressed(.SIX) { // Enemy Spawner
+        game.editor_selected_entity = 6
+        game.is_editor_entity_selected = true
+    }
 
     if game.is_editor_entity_selected  {
         // display ghost entity under cursor
@@ -354,7 +368,9 @@ get_user_input :: proc(game: ^Game, camera: ^rl.Camera2D) {
 
     move = move * rl.GetFrameTime() * 400
     e, ok := get_entity(game, game.self)
-    move = limit_player_to_zone(e, move)
+    if zone_limit {
+        move = limit_player_to_zone(e, move)
+    }
 
     new_pos := e.pos + move
     e.pos = new_pos
@@ -429,6 +445,8 @@ draw_entity :: proc(game: ^Game, e: ^Entity, alpha: u8 = 255) {
             // nothing
         case DefensePoint:
             // nothing
+        case EnemySpawner:
+            rl.DrawCircleV(e.pos, 35, rl.Color{241, 244, 191, 255})
     }
 
     color := e.color
@@ -520,6 +538,7 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                                         }
                                     case PickupResource:
                                     case DefensePoint:
+                                    case EnemySpawner:
                                 }
                             case Rectangle:// ignore
                             case Circle:
@@ -535,6 +554,8 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                                 case PickupResource:
                                     continue
                                 case DefensePoint:
+                                    continue
+                                case EnemySpawner:
                                     continue
                             }
 
@@ -624,6 +645,7 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                                 b.target_id = p.id
                                 b.has_target = true
                                 return
+                            case EnemySpawner:
                         }
                     }
                 }
@@ -653,13 +675,30 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                     case MiningResource:
                     case PickupResource: 
                     case DefensePoint:
+                    case EnemySpawner:
                 }
             }
         }
         case DefensePoint: {
             // TODO
         }
+        case EnemySpawner: {
+            b.spawn_timer -= rl.GetFrameTime()
+            if b.spawn_timer <= 0 {
+                b.spawn_timer = SPAWN_TIMER_TIME
+                spawn_enemy(game, e.pos)
+            }
+        }
     }
+}
+
+spawn_enemy :: proc(game: ^Game, position: rl.Vector2) {
+    id := i32(len(game.entities))
+    new_enemy := editor_entities[1]
+    new_enemy.id = id
+    new_enemy.pos = position
+
+    append(&game.entities, new_enemy)
 }
 
 // create_entity :: proc(entity_template) -> Entity {
@@ -775,6 +814,10 @@ execute_console_command :: proc(game: ^Game) {
         fmt.println("[CMD] mode: EDITOR")
         game.mode = .EDITOR
     }
+    else if strings.equal_fold(command, "L") {
+        fmt.println("[CMD]: inverse player zone limit")
+        zone_limit = !zone_limit
+    }
 
     game.console_command = ""
     game.is_console_open = false
@@ -832,13 +875,13 @@ limit_player_to_zone :: proc(e: ^Entity, delta_p: rl.Vector2) -> rl.Vector2 {
     return ret_delta_p
 }
 
-handle_recv :: proc(game: ^Game) {
+handle_recv :: proc(game: ^Game) -> bool {
     for {
         frame, endpoint, ok := recv_struct(game.sock)
 
         if !ok {
             // ignore, maybe no data, maybe error
-            return
+            return false
         }
 
         // fmt.printfln("received: %d bytes", size_of(frame.frame))
@@ -848,7 +891,7 @@ handle_recv :: proc(game: ^Game) {
             case .CLIENT: {
                 if endpoint != game.server_endpoint {
                     fmt.println("[ERR] Received from wrong endpoint")
-                    return
+                    return false
                 }
             }
             case .SERVER:
@@ -858,6 +901,8 @@ handle_recv :: proc(game: ^Game) {
 
         handle_net_recv(frame, game)
     }
+
+    return true
 }
 
 send_init_ack :: proc(game: ^Game) {
@@ -892,20 +937,22 @@ send_game_state_to_client :: proc(game: ^Game, client: net.Endpoint) {
 main :: proc() {
     game := Game{{}, .SINGLE, 0, .MAIN_MENU, -1, .NORMAL, make([dynamic]Entity, 0, 0), make([dynamic]string, 0, 0), "", false, 0, false, 0, {}, false, 0, make([dynamic]ClientRef, 0, 0), make([dynamic]SendQueue, 0, 0)}
 
+    rl.SetConfigFlags({rl.ConfigFlag.WINDOW_RESIZABLE})
+    rl.InitWindow(1280, 720, "Top Down Shooter")
+    defer rl.CloseWindow()
+
     if len(os.args) > 1 {
         switch os.args[1] {
-            case "c":
-                start_client(&game, LOCALHOST)
             case "s":
                 host_server(&game)
+                rl.SetWindowPosition(10, 10)
+            case "c":
+                start_client(&game, LOCALHOST)
+                rl.SetWindowPosition(10, 720 + 10*2)
             case:
                 fmt.printfln("Command '%s' cannot be found. Crashing out!", os.args[1])
         }
     }
-
-    rl.SetConfigFlags({rl.ConfigFlag.WINDOW_RESIZABLE})
-    rl.InitWindow(1280, 720, "Top Down Shooter")
-    defer rl.CloseWindow()
 
     rl.InitAudioDevice()
     defer rl.CloseAudioDevice()
@@ -979,11 +1026,12 @@ main :: proc() {
                         if !game.server_endpoint_established { // establish "connection" to server
                             game.server_endpoint_ack_timeout -= rl.GetFrameTime()
                             if game.server_endpoint_ack_timeout < 0 {
-                                game.server_endpoint_ack_timeout = 10
+                                game.server_endpoint_ack_timeout = 2
                                 send_init_ack(&game)
                             }
                         }
-                        handle_recv(&game) // TEST
+                        ok := handle_recv(&game)
+                        if ok do game.server_endpoint_ack_timeout = 2
                     }
                     else {
                         load_from_file("game-entities.dat", &game)
@@ -1067,6 +1115,10 @@ main :: proc() {
             if game.hosting == .SERVER {
                 rl.DrawText("SERVER", 10, screen_height - 30, 30, rl.Color{20, 255, 20, 255})
             }
+
+            if !zone_limit {
+                rl.DrawText("NO ZONE LIMIT", screen_width - 100, screen_height - 30, 30, rl.Color{255, 20, 20, 255})
+            }
         }
 
     }
@@ -1137,20 +1189,15 @@ handle_net_recv :: proc(net_data: NetData, game: ^Game) {
                 e.behaviour = f.behaviour
                 switch &b in e.behaviour {
                     case EBType:
-                        // Handle EBType if needed, or leave empty if no action required
                     case LookAndShoot:
-                        // Handle LookAndShoot if needed, or leave empty if no action required
                     case DeathAnimation:
                         // NOTE: temporarily disabled due to testing both client and server on same PC
                         // rl.PlaySound(explosion_sound)
                     case ZombieAttack:
-                        // Handle ZombieAttack if needed, or leave empty if no action required
                     case MiningResource:
-                        // Handle MiningResource if needed, or leave empty if no action required
                     case PickupResource:
-                        // Handle PickupResource if needed, or leave empty if no action required
                     case DefensePoint:
-                        // Handle DefensePoint if needed, or leave empty if no action required
+                    case EnemySpawner:
                 }
             }
         case Ack:
