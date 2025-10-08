@@ -79,13 +79,13 @@ cstring_to_string :: proc(b: []u8) -> string {
 }
 
 editor_entities := []Entity{
-    Entity{0, {250, 250}, {}, rl.RED, .PLAYER, Circle{25}, true, 10, .PLAYER},
-    Entity{0, {800, 400}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY/*, 0, 0*/},
-    Entity{0, {400, 400}, {}, rl.MAGENTA, LookAndShoot{1, 0, false}, Circle{25}, true, 1, .ENEMY},
-    Entity{0, {}, {}, rl.GREEN, MiningResource{}, Diamond{{90, 90}}, true, 1, .NONE},
-    Entity{0, {}, {}, rl.BLUE, PickupResource{}, Diamond{{8, 8}}, true, 1, .NONE},
-    Entity{0, {}, {}, rl.PINK, DefensePoint{}, Rectangle{{100, 100}}, true, 10, .NONE},
-    Entity{0, {}, {}, rl.Color{241, 244, 191, 255}, EnemySpawner{}, Circle{80}, true, 10, .NONE},
+    Entity{-1, {250, 250}, {}, rl.RED, .PLAYER, Circle{25}, true, 10, .PLAYER},
+    Entity{-1, {800, 400}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY},
+    Entity{-1, {400, 400}, {}, rl.MAGENTA, LookAndShoot{1, 0, false}, Circle{25}, true, 1, .ENEMY},
+    Entity{-1, {}, {}, rl.GREEN, MiningResource{}, Diamond{{90, 90}}, true, 1, .NONE},
+    Entity{-1, {}, {}, rl.BLUE, PickupResource{}, Diamond{{8, 8}}, true, 1, .NONE},
+    Entity{-1, {}, {}, rl.PINK, DefensePoint{}, Rectangle{{100, 100}}, true, 10, .NONE},
+    Entity{-1, {}, {}, rl.Color{241, 244, 191, 255}, EnemySpawner{}, Circle{80}, true, 10, .NONE},
 }
 
 Game :: struct {
@@ -96,6 +96,7 @@ Game :: struct {
     self: i32,
     mode: GameMode,
     entities: [dynamic]Entity,
+    latest_entity_id: i32,
     console_command_history: [dynamic]string,
     console_command: string,
     is_console_open: bool,
@@ -224,12 +225,40 @@ Diamond :: struct {
     size: rl.Vector2
 }
 
+add_entity :: proc(game: ^Game, e: Entity) -> i32 {
+    entity := e
+    if entity.id < 0 {
+        game.latest_entity_id += 1
+        entity.id = game.latest_entity_id
+    }
+
+    append(&game.entities, entity)
+
+    if game.hosting == .SERVER {
+        broadcast_update(game, .ENTITY_LOAD, entity)
+    }
+    else if game.hosting == .CLIENT {
+        send_struct(game.sock, game.server_endpoint, .ENTITY_LOAD, entity, true)
+    }
+
+    return entity.id
+}
+
 get_entity :: proc(game: ^Game, id: i32) -> (^Entity, bool) {
     for &e in game.entities {
         if e.id == id do return &e, true
     }
 
     return {}, false
+}
+
+remove_entity :: proc(game: ^Game, id: i32) {
+    for i in 0..<len(game.entities) {
+        if game.entities[i].id == id {
+            unordered_remove(&game.entities, i)
+            return
+        }
+    }
 }
 
 save_to_file :: proc(filepath: string, game: ^Game) {
@@ -271,7 +300,7 @@ load_from_file :: proc(filepath: string, game: ^Game) {
         if(i+int(l) >= len(data)) do break
         buffer := data[i:i+int(l)]
         e := transmute(^Entity)&buffer[0]
-        append(&game.entities, e^)
+        add_entity(game, e^)
         i += int(l)
     }
 
@@ -317,9 +346,7 @@ editor_input :: proc(game: ^Game, camera: rl.Camera2D) {
         if rl.IsMouseButtonPressed(.LEFT) {
             game.is_editor_entity_selected = false
             
-            id := i32(len(game.entities))
-            entity.id = id
-            append(&game.entities, entity)
+            id := add_entity(game, entity)
             if game.editor_selected_entity == 0 {
                 game.self = id
             }
@@ -361,15 +388,9 @@ get_user_input :: proc(game: ^Game, camera: ^rl.Camera2D) {
         dir := mouse_pos - origin
         magnitude := math.sqrt_f32(dir.x*dir.x + dir.y*dir.y)
         dir = dir / magnitude
-        e := Entity{i32(len(game.entities)), origin, dir * PROJECTILE_SPEED, rl.YELLOW, .DYNAMIC_BODY, Circle{5}, 2.0, 0, .PLAYER/*, 0, 0*/}
-        append(&game.entities, e)
 
-        if game.hosting == .SERVER {
-            broadcast_update(game, .ENTITY_LOAD, e)
-        }
-        else if game.hosting == .CLIENT {
-            send_struct(game.sock, game.server_endpoint, .ENTITY_LOAD, e, true)
-        }
+        e := Entity{-1, origin, dir * PROJECTILE_SPEED, rl.YELLOW, .DYNAMIC_BODY, Circle{5}, 2.0, 0, .PLAYER/*, 0, 0*/}
+        add_entity(game, e)
     }
 
     move = move * rl.GetFrameTime() * 400
@@ -473,9 +494,6 @@ draw_entity :: proc(game: ^Game, e: ^Entity, alpha: u8 = 255) {
 create_pickup_resource :: proc(game: ^Game, pos: rl.Vector2) -> Entity {
     pickup := editor_entities[4]
     pickup.pos = pos
-    pickup.id = i32(len(game.entities))
-
-    append(&game.entities, pickup)
 
     return pickup
 }
@@ -536,8 +554,8 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                                             that_rect := rl.Rectangle{that.pos.x, that.pos.y, that_shape.size.x, that_shape.size.y}
                                             if rl.CheckCollisionCircleRec(e.pos, e.shape.(Circle).radius, that_rect) {
                                                 pos := e.pos - e.vel * 7
-                                                pickup_entity := create_pickup_resource(game, pos)
-                                                broadcast_update(game, .ENTITY_LOAD, pickup_entity)
+                                                pickup := create_pickup_resource(game, pos)
+                                                add_entity(game, pickup)
                                                 e.lifetime = false
                                                 broadcast_update(game, .ENTITY_LIFETIME, EntityLifetime{e.id, e.lifetime})
                                             }
@@ -699,12 +717,10 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
 }
 
 spawn_enemy :: proc(game: ^Game, position: rl.Vector2) {
-    id := i32(len(game.entities))
     new_enemy := editor_entities[1]
-    new_enemy.id = id
     new_enemy.pos = position
 
-    append(&game.entities, new_enemy)
+    add_entity(game, new_enemy)
 }
 
 // create_entity :: proc(entity_template) -> Entity {
@@ -713,25 +729,21 @@ spawn_enemy :: proc(game: ^Game, position: rl.Vector2) {
 
 load_level_static :: proc(game: ^Game) {
     // body_id, shape_id := create_circle(game.b2world)
-    append(&game.entities, Entity{i32(len(game.entities)), {800, 700}, {}, rl.RED, .PLAYER, Circle{25}, true, 10, .PLAYER})
-    game.self = 0
+    player_id := add_entity(game, Entity{-1, {800, 700}, {}, rl.RED, .PLAYER, Circle{25}, true, 10, .PLAYER})
+    game.self = player_id
 
     append(&game.entities, Entity{i32(len(game.entities)), {400, 400}, {}, rl.MAGENTA, LookAndShoot{1, 0, false}, Circle{25}, true, 1, .ENEMY})
     append(&game.entities, Entity{i32(len(game.entities)), {800, 400}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
     append(&game.entities, Entity{i32(len(game.entities)), {800, 300}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
     append(&game.entities, Entity{i32(len(game.entities)), {800, 200}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
 
-    id := i32(len(game.entities))
     spawner := editor_entities[6]
-    spawner.id = id
     spawner.pos = {-100, -100}
-    append(&game.entities, spawner)
+    add_entity(game, spawner)
 
-    id = i32(len(game.entities))
     defense_point := editor_entities[5]
-    defense_point.id = id
     defense_point.pos = {50, 800}
-    append(&game.entities, defense_point)
+    add_entity(game, defense_point)
 }
 
 create_circle :: proc (world_id: b2.WorldId, pos: b2.Vec2, origin: b2.Vec2, body_type: b2.BodyType, density :f32= 1.0) -> (b2.BodyId, b2.ShapeId) {
@@ -951,7 +963,7 @@ send_game_state_to_client :: proc(game: ^Game, client: net.Endpoint) {
 }
 
 main :: proc() {
-    game := Game{{}, .SINGLE, 0, .MAIN_MENU, -1, .NORMAL, make([dynamic]Entity, 0, 0), make([dynamic]string, 0, 0), "", false, 0, false, 0, {}, false, 0, make([dynamic]ClientRef, 0, 0), make([dynamic]SendQueue, 0, 0)}
+    game := Game{{}, .SINGLE, 0, .MAIN_MENU, -1, .NORMAL, make([dynamic]Entity, 0, 0), 0, make([dynamic]string, 0, 0), "", false, 0, false, 0, {}, false, 0, make([dynamic]ClientRef, 0, 0), make([dynamic]SendQueue, 0, 0)}
 
     rl.SetConfigFlags({rl.ConfigFlag.WINDOW_RESIZABLE})
     rl.InitWindow(1280, 720, "Top Down Shooter")
@@ -1088,6 +1100,17 @@ main :: proc() {
                                 editor_input(&game, camera)
                             }
                     }
+
+                    // for i in 0..<len(game.entities) {
+                    //     switch &l in game.entities[i].lifetime  {
+                    //         case bool:
+                    //             if l == false {
+                    //                 unordered_remove(&game.entities, i)
+                    //             }
+                    //         case f32:
+                    //             // intentionally empty
+                    //     }
+                    // }
 
                     for &e in game.entities {
                         switch &l in e.lifetime  {
