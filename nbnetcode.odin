@@ -146,7 +146,7 @@ send_struct :: proc(sock: net.UDP_Socket, endpoint: net.Endpoint, action: NetAct
 
     // Write header (u32 each)
     bytes: [4]u8
-    index := 0
+    index :u32= 0
     bytes = transmute([4]u8)CURRENT_NET_VERSION
     mem.copy(&buffer[index], &bytes, 4)
     index += 4
@@ -162,7 +162,7 @@ send_struct :: proc(sock: net.UDP_Socket, endpoint: net.Endpoint, action: NetAct
 
     frame_bytes :[]u8= mem.any_to_bytes(data)
     mem.copy(&buffer[index], &frame_bytes[0], int(t_size))
-    _, err := net.send_udp(sock, buffer[:], endpoint)
+    _, err := net.send_udp(sock, buffer[:index+t_size], endpoint)
     return err == nil
 }
 
