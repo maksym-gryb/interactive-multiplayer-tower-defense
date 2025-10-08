@@ -16,6 +16,12 @@ TODO:
 1. make some NetAction, require ACK
 
 
+TODO from playtests:
+
+1. delete dead entities
+2. [done] dynamically sized buffer to udp_send
+3. queue changes into a diff and send the "game-state-diff" as one packet
+
 */
 
 package app
@@ -710,10 +716,6 @@ load_level_static :: proc(game: ^Game) {
     append(&game.entities, Entity{i32(len(game.entities)), {800, 700}, {}, rl.RED, .PLAYER, Circle{25}, true, 10, .PLAYER})
     game.self = 0
 
-    // append(&game.entities, Entity{i32(len(game.entities)), {30, 30}, {}, rl.RED, .STATIC_BODY, Rectangle{{500, 10}}, true, 0, .NONE})
-    // append(&game.entities, Entity{i32(len(game.entities)), {30, 30}, {}, rl.RED, .STATIC_BODY, Rectangle{{10, 500}}, true, 0, .NONE})
-    // append(&game.entities, Entity{i32(len(game.entities)), {30, 30}, {}, rl.RED, .STATIC_BODY, Rectangle{{100, 10}}, true, 0, .NONE})
-
     append(&game.entities, Entity{i32(len(game.entities)), {400, 400}, {}, rl.MAGENTA, LookAndShoot{1, 0, false}, Circle{25}, true, 1, .ENEMY})
     append(&game.entities, Entity{i32(len(game.entities)), {800, 400}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
     append(&game.entities, Entity{i32(len(game.entities)), {800, 300}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
@@ -888,12 +890,13 @@ limit_player_to_zone :: proc(e: ^Entity, delta_p: rl.Vector2) -> rl.Vector2 {
 }
 
 handle_recv :: proc(game: ^Game) -> bool {
+    got_data := false
     for {
         frame, endpoint, ok := recv_struct(game.sock)
 
         if !ok {
             // ignore, maybe no data, maybe error
-            return false
+            return got_data
         }
 
         // fmt.printfln("received: %d bytes", size_of(frame.frame))
@@ -912,9 +915,10 @@ handle_recv :: proc(game: ^Game) -> bool {
 
 
         handle_net_recv(frame, game)
+        got_data = true
     }
 
-    return true
+    return got_data
 }
 
 send_init_ack :: proc(game: ^Game) {
@@ -971,6 +975,8 @@ main :: proc() {
 
     explosion_sound = rl.LoadSound("assets/explosion.mp3")
     defer rl.UnloadSound(explosion_sound)
+
+    rl.SetSoundVolume(explosion_sound, 0.2)
 
     rl.SetTargetFPS(122)
 
