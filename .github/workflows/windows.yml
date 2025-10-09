@@ -26,21 +26,22 @@ jobs:
         run: |
           odin.exe build . -o:speed -out:app.exe
 
-      - name: Package executable
+      - name: Create ZIP file
+        shell: pwsh
         run: |
-          tar -czf app.tar.gz app.exe assets
+          Compress-Archive -Path "assets", "app.exe" -DestinationPath "app.zip"
 
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app.tar.gz
-          path: ./app.tar.gz
+          name: app.zip
+          path: ./app.zip
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          files: ./app.tar.gz
+          files: ./app.zip
           token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
