@@ -1253,8 +1253,10 @@ handle_net_recv :: proc(net_data: NetData, game: ^Game) {
                     case EBType:
                     case LookAndShoot:
                     case DeathAnimation:
-                        // NOTE: temporarily disabled due to testing both client and server on same PC
-                        rl.PlaySound(explosion_sound) // TODO: make this into a "WHEN DEBUG"
+                        // NOTE: disable duplicate sounds when testing locally
+                        when !ODIN_DEBUG { 
+                            rl.PlaySound(explosion_sound)
+                        }
                     case ZombieAttack:
                     case MiningResource:
                     case PickupResource:
