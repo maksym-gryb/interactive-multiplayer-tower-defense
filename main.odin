@@ -225,19 +225,27 @@ Diamond :: struct {
     size: rl.Vector2
 }
 
-add_entity :: proc(game: ^Game, e: Entity) -> i32 {
+add_entity :: proc(game: ^Game, e: Entity, broadcast: bool = true) -> i32 {
+    // TODO 1: check if ID already exists or not
+    // TODO 2: sometimes it doesn't need to broadcast, like when client receives
     entity := e
     if entity.id < 0 {
         game.latest_entity_id += 1
         entity.id = game.latest_entity_id
     }
 
-    append(&game.entities, entity)
+    if game.hosting != .CLIENT {
+        append(&game.entities, entity)
+    }
+
+    if game.state == .LOADING {
+        return entity.id
+    }
 
     if game.hosting == .SERVER {
         broadcast_update(game, .ENTITY_LOAD, entity)
     }
-    else if game.hosting == .CLIENT {
+    else if game.hosting == .CLIENT && broadcast {
         send_struct(game.sock, game.server_endpoint, .ENTITY_LOAD, entity, true)
     }
 
@@ -347,7 +355,7 @@ editor_input :: proc(game: ^Game, camera: rl.Camera2D) {
             game.is_editor_entity_selected = false
             
             id := add_entity(game, entity)
-            if game.editor_selected_entity == 0 {
+            if game.editor_selected_entity == 0 { // player entity
                 game.self = id
             }
         }
@@ -389,7 +397,7 @@ get_user_input :: proc(game: ^Game, camera: ^rl.Camera2D) {
         magnitude := math.sqrt_f32(dir.x*dir.x + dir.y*dir.y)
         dir = dir / magnitude
 
-        e := Entity{-1, origin, dir * PROJECTILE_SPEED, rl.YELLOW, .DYNAMIC_BODY, Circle{5}, 2.0, 0, .PLAYER/*, 0, 0*/}
+        e := Entity{-1, origin, dir * PROJECTILE_SPEED, rl.YELLOW, .DYNAMIC_BODY, Circle{5}, 2.0, 0, .PLAYER}
         add_entity(game, e)
     }
 
@@ -732,10 +740,10 @@ load_level_static :: proc(game: ^Game) {
     player_id := add_entity(game, Entity{-1, {800, 700}, {}, rl.RED, .PLAYER, Circle{25}, true, 10, .PLAYER})
     game.self = player_id
 
-    append(&game.entities, Entity{i32(len(game.entities)), {400, 400}, {}, rl.MAGENTA, LookAndShoot{1, 0, false}, Circle{25}, true, 1, .ENEMY})
-    append(&game.entities, Entity{i32(len(game.entities)), {800, 400}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
-    append(&game.entities, Entity{i32(len(game.entities)), {800, 300}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
-    append(&game.entities, Entity{i32(len(game.entities)), {800, 200}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
+    add_entity(game, Entity{-1, {400, 400}, {}, rl.MAGENTA, LookAndShoot{1, 0, false}, Circle{25}, true, 1, .ENEMY})
+    add_entity(game, Entity{-1, {800, 400}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
+    add_entity(game, Entity{-1, {800, 300}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
+    add_entity(game, Entity{-1, {800, 200}, {}, rl.GREEN, ZombieAttack{0, false}, Circle{25}, true, 1, .ENEMY})
 
     spawner := editor_entities[6]
     spawner.pos = {-100, -100}
@@ -933,6 +941,15 @@ handle_recv :: proc(game: ^Game) -> bool {
     return got_data
 }
 
+handle_send :: proc(game: ^Game) {
+    // TODO
+    // for q in game.send_queue {
+    //     // TODO
+    // }
+
+    // game.send_queue = make(...)
+}
+
 send_init_ack :: proc(game: ^Game) {
     ok := send_struct(game.sock, game.server_endpoint, .SERVER_ACK, 1)
     if ok {
@@ -945,10 +962,8 @@ send_init_ack :: proc(game: ^Game) {
 
 send_game_state_to_client :: proc(game: ^Game, client: net.Endpoint) {
     // create new player for client
-    id := i32(len(game.entities))
     new_player := editor_entities[0]
-    new_player.id = id
-    append(&game.entities, new_player)
+    new_player_id := add_entity(game, new_player)
 
     // send all entities to player
     for &e in game.entities {
@@ -956,7 +971,7 @@ send_game_state_to_client :: proc(game: ^Game, client: net.Endpoint) {
     }
 
     // assign player to client
-    send_struct(game.sock, client, .ASSIGN_PLAYER, new_player.id, true)
+    send_struct(game.sock, client, .ASSIGN_PLAYER, new_player_id, true)
 
     // set state = .PLAYING
     send_struct(game.sock, client, .GAME_STATE, GameState.PLAYING, true)
@@ -1078,6 +1093,7 @@ main :: proc() {
                     if game.hosting == .CLIENT || game.hosting == .SERVER {
                         handle_recv(&game)
                         run_ack_queue(&game.send_queue, rl.GetFrameTime())
+                        handle_send(&game)
                     }
 
                     if game.self >= 0 {
@@ -1184,7 +1200,11 @@ handle_net_recv :: proc(net_data: NetData, game: ^Game) {
             }
         case Entity:
             {
+                // add_entity(game, f, false)
                 append(&game.entities, f)
+                if f.id > game.latest_entity_id do game.latest_entity_id = f.id
+
+                broadcast_update(game, .ENTITY_LOAD, f)
             }
         case EntityMove:
 
@@ -1234,7 +1254,7 @@ handle_net_recv :: proc(net_data: NetData, game: ^Game) {
                     case LookAndShoot:
                     case DeathAnimation:
                         // NOTE: temporarily disabled due to testing both client and server on same PC
-                        // rl.PlaySound(explosion_sound)
+                        rl.PlaySound(explosion_sound) // TODO: make this into a "WHEN DEBUG"
                     case ZombieAttack:
                     case MiningResource:
                     case PickupResource:

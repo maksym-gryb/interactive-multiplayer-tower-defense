@@ -115,9 +115,10 @@ recv_ack :: proc() {
 
 // sends a struct and keeps sending until an ACK is received
 queue_struct_ack :: proc(sock: net.UDP_Socket, endpoint: net.Endpoint, action: NetAction, data: $T, queue: ^[dynamic]SendQueue) -> bool {
-    context.random_generator = crypto.random_generator()
-    random_uuid = uuid.generate_v7()
-    append(queue, SendQueue{random_uuid, sock, endpoint, action, data, 0})
+    // TODO
+    // context.random_generator = crypto.random_generator()
+    // random_uuid = uuid.generate_v7()
+    // append(queue, SendQueue{random_uuid, sock, endpoint, action, data, 0})
 }
 
 run_ack_queue :: proc(queue: ^[dynamic]SendQueue, time_diff: f32) {
