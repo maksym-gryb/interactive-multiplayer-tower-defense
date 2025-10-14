@@ -70,6 +70,8 @@ explosion_texture : rl.Texture2D
 explosion_texture_frames: u32
 EXPLOSION_FRAME_DELAY :f32: 0.02
 
+interact_cursor_sprite :rl.Texture2D
+
 cstring_to_string :: proc(b: []u8) -> string {
     n := 0
     for n < len(b) && b[n] != 0 {
@@ -86,9 +88,11 @@ editor_entities := []Entity{
     Entity{-1, {}, {}, rl.BLUE, PickupResource{}, Diamond{{8, 8}}, true, 1, .NONE},
     Entity{-1, {}, {}, rl.PINK, DefensePoint{}, Rectangle{{100, 100}}, true, 10, .NONE},
     Entity{-1, {}, {}, rl.Color{241, 244, 191, 255}, EnemySpawner{}, Circle{80}, true, 10, .NONE},
+    Entity{-1, {}, {}, rl.Color{255, 255, 255, 255}, Tower{0, -1}, Circle{80}, true, 10, .PLAYER},
 }
 
 Game :: struct {
+    camera: ^rl.Camera2D,
     b2world: b2.WorldId,
     hosting: Hosting,
     sock: net.UDP_Socket,
@@ -107,7 +111,8 @@ Game :: struct {
     server_endpoint_established: bool,
     server_endpoint_ack_timeout: f32,
     clients: [dynamic]ClientRef,
-    send_queue: [dynamic]SendQueue
+    send_queue: [dynamic]SendQueue,
+    is_build_menu_open: bool,
 }
 
 ClientRef :: struct {
@@ -165,9 +170,8 @@ EntityBehaviour :: union {
     MiningResource,
     PickupResource,
     DefensePoint,
-    EnemySpawner
-    // Gate,
-    // SpawnPoint
+    EnemySpawner,
+    Tower
 }
 
 EBType :: enum {
@@ -207,6 +211,11 @@ DefensePoint :: struct {
 
 }
 
+Tower :: struct {
+    construction_progress: u32, // 0 -> 100
+    target: i32
+}
+
 Shape :: union {
     Rectangle,
     Circle,
@@ -226,12 +235,17 @@ Diamond :: struct {
 }
 
 add_entity :: proc(game: ^Game, e: Entity, broadcast: bool = true) -> i32 {
-    // TODO 1: check if ID already exists or not
-    // TODO 2: sometimes it doesn't need to broadcast, like when client receives
     entity := e
     if entity.id < 0 {
         game.latest_entity_id += 1
         entity.id = game.latest_entity_id
+    }
+
+    for &ee in game.entities {
+        if entity.id == ee.id {
+            entity.id = game.latest_entity_id
+            game.latest_entity_id += 1
+        }
     }
 
     if game.hosting != .CLIENT {
@@ -253,8 +267,14 @@ add_entity :: proc(game: ^Game, e: Entity, broadcast: bool = true) -> i32 {
 }
 
 get_entity :: proc(game: ^Game, id: i32) -> (^Entity, bool) {
+    if id < 0 do return {}, false
+
     for &e in game.entities {
-        if e.id == id do return &e, true
+        if e.id == id {
+            if e.lifetime == false do return {}, false
+
+            return &e, true
+        }
     }
 
     return {}, false
@@ -297,7 +317,7 @@ load_from_file :: proc(filepath: string, game: ^Game) {
     i :int=0
     for {
         if(i >= len(data)) do break
-        if(i+4 >= len(data)) do break
+        // if(i+4 >= len(data)) do break
 
         slice :[4]u8 = slice.to_type(data[i:i+4], [4]u8)
         i+=4
@@ -305,7 +325,7 @@ load_from_file :: proc(filepath: string, game: ^Game) {
         fmt.printfln("loading len: %d", l)
 
         if(i >= len(data)) do break
-        if(i+int(l) >= len(data)) do break
+        // if(i+int(l) >= len(data)) do break
         buffer := data[i:i+int(l)]
         e := transmute(^Entity)&buffer[0]
         add_entity(game, e^)
@@ -340,6 +360,10 @@ editor_input :: proc(game: ^Game, camera: rl.Camera2D) {
         game.editor_selected_entity = 6
         game.is_editor_entity_selected = true
     }
+    if rl.IsKeyPressed(.SEVEN) { // Enemy Spawner
+        game.editor_selected_entity = 7
+        game.is_editor_entity_selected = true
+    }
 
     if game.is_editor_entity_selected  {
         // display ghost entity under cursor
@@ -371,7 +395,39 @@ snap_to_grid :: proc(pos: rl.Vector2) -> rl.Vector2 {
     return p
 }
 
+
+interact_with :: proc(interactable: ^Entity) {
+    switch &b in interactable.behaviour {
+        case EBType:
+        case LookAndShoot:
+        case DeathAnimation:
+        case ZombieAttack:
+        case MiningResource:
+        case PickupResource:
+        case DefensePoint:
+        case EnemySpawner:
+        case Tower: {
+            b.construction_progress += 25
+            if b.construction_progress > 100 {
+                b.construction_progress = 100
+            }
+        }
+    }
+}
+
 get_user_input :: proc(game: ^Game, camera: ^rl.Camera2D) {
+    e, ok := get_entity(game, game.self)
+
+    if !ok {
+        return
+    }
+
+    // build menu
+    if rl.IsKeyPressed(.B) {
+        game.is_build_menu_open = !game.is_build_menu_open
+    }
+
+    // move
     move := rl.Vector2{}
     if rl.IsKeyDown(.W) {
         move.y -= 1
@@ -388,21 +444,26 @@ get_user_input :: proc(game: ^Game, camera: ^rl.Camera2D) {
 
     // shoot projectile
     if rl.IsMouseButtonPressed(.LEFT) {
-        origin_e, ok := get_entity(game, game.self)
-        origin := origin_e.pos
-        mouse_pos := rl.GetMousePosition()
-        mouse_pos = rl.GetScreenToWorld2D(mouse_pos, camera^)
-        // fmt.println(mouse_pos)
-        dir := mouse_pos - origin
-        magnitude := math.sqrt_f32(dir.x*dir.x + dir.y*dir.y)
-        dir = dir / magnitude
+        interactable, yes := cursor_hovering_interactable(game, camera)
+        if yes {// interact
+            interact_with(interactable)
+        }
+        else {// shoot
+            origin_e, ok := get_entity(game, game.self)
+            origin := origin_e.pos
+            mouse_pos := rl.GetMousePosition()
+            mouse_pos = rl.GetScreenToWorld2D(mouse_pos, camera^)
+            // fmt.println(mouse_pos)
+            dir := mouse_pos - origin
+            magnitude := math.sqrt_f32(dir.x*dir.x + dir.y*dir.y)
+            dir = dir / magnitude
 
-        e := Entity{-1, origin, dir * PROJECTILE_SPEED, rl.YELLOW, .DYNAMIC_BODY, Circle{5}, 2.0, 0, .PLAYER}
-        add_entity(game, e)
+            e := Entity{-1, origin, dir * PROJECTILE_SPEED, rl.YELLOW, .DYNAMIC_BODY, Circle{5}, 2.0, 0, .PLAYER}
+            add_entity(game, e)
+        }
     }
 
     move = move * rl.GetFrameTime() * 400
-    e, ok := get_entity(game, game.self)
     if zone_limit {
         move = limit_player_to_zone(e, move)
     }
@@ -419,6 +480,8 @@ get_user_input :: proc(game: ^Game, camera: ^rl.Camera2D) {
 }
 
 draw_entity :: proc(game: ^Game, e: ^Entity, alpha: u8 = 255) {
+
+    nalpha := alpha
     switch b in e.behaviour {
         case EBType:
             switch b {
@@ -432,7 +495,9 @@ draw_entity :: proc(game: ^Game, e: ^Entity, alpha: u8 = 255) {
                 draw_point: rl.Vector2
                 if(b.has_target) {
                     that, ok := get_entity(game, b.target_id)
-                    draw_point = that.pos
+                    if ok {
+                        draw_point = that.pos
+                    }
                 }
                 else {
                     cos := math.cos_f32(b.rotation)
@@ -482,10 +547,21 @@ draw_entity :: proc(game: ^Game, e: ^Entity, alpha: u8 = 255) {
             // nothing
         case EnemySpawner:
             rl.DrawCircleV(e.pos, 35, rl.Color{241, 244, 191, 255})
+        case Tower:{
+            that, ok := get_entity(game, b.target)
+
+            if b.construction_progress < 100 {
+                nalpha = u8(u32((255 - 25)) * b.construction_progress/100) + 25
+            }
+
+            if ok {
+                rl.DrawLineV(e.pos, that.pos, rl.Color{125, 0, 125, 255})
+            }
+        }
     }
 
     color := e.color
-    color.a = alpha
+    color.a = nalpha
     switch &s in e.shape {
         case Rectangle:
             rl.DrawRectangleV(e.pos, s.size, color)
@@ -571,6 +647,7 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                                     case PickupResource:
                                     case DefensePoint:
                                     case EnemySpawner:
+                                    case Tower:
                                 }
                             case Rectangle:// ignore
                             case Circle:
@@ -588,6 +665,8 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                                 case DefensePoint:
                                     continue
                                 case EnemySpawner:
+                                    continue
+                                case Tower:
                                     continue
                             }
 
@@ -678,6 +757,7 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                                 b.has_target = true
                                 return
                             case EnemySpawner:
+                            case Tower:
                         }
                     }
                 }
@@ -708,6 +788,7 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
                     case PickupResource: 
                     case DefensePoint:
                     case EnemySpawner:
+                    case Tower:
                 }
             }
         }
@@ -719,6 +800,71 @@ run_entity :: proc(game: ^Game, e: ^Entity) {
             if b.spawn_timer <= 0 {
                 b.spawn_timer = SPAWN_TIMER_TIME
                 spawn_enemy(game, e.pos)
+            }
+        }
+        case Tower: {
+            if b.construction_progress < 100 {
+                return
+            }
+
+            that, ok := get_entity(game, b.target)
+            if ok {
+                switch &enemy_b in that.behaviour {
+                    case EBType:
+                        b.target = -1
+                        return
+                    case LookAndShoot:
+                    case DeathAnimation:
+                        b.target = -1
+                        return
+                    case ZombieAttack:
+                    case MiningResource:
+                        b.target = -1
+                        return
+                    case PickupResource:
+                        b.target = -1
+                        return
+                    case DefensePoint:
+                        b.target = -1
+                        return
+                    case EnemySpawner:
+                        b.target = -1
+                        return
+                    case Tower:
+                        b.target = -1
+                        return
+                }
+
+                origin := e.pos
+
+                dir := that.pos - origin
+                magnitude := math.sqrt_f32(dir.x*dir.x + dir.y*dir.y)
+                dir = dir / magnitude
+
+                e := Entity{-1, origin, dir * PROJECTILE_SPEED, rl.YELLOW, .DYNAMIC_BODY, Circle{5}, 2.0, 0, .PLAYER}
+                add_entity(game, e)
+            }
+            else {
+                b.target = -1
+                for &that in game.entities {
+                    if that.lifetime == false do continue
+
+                    switch &enemy_b in that.behaviour {
+                        case EBType:
+                        case LookAndShoot:
+                            b.target = that.id
+                            return
+                        case DeathAnimation:
+                        case ZombieAttack:
+                            b.target = that.id
+                            return
+                        case MiningResource:
+                        case PickupResource:
+                        case DefensePoint:
+                        case EnemySpawner:
+                        case Tower:
+                    }
+                }
             }
         }
     }
@@ -828,6 +974,10 @@ execute_console_command :: proc(game: ^Game) {
 
     fmt.printfln("[-CMD]: %s", command)
 
+    if strings.equal_fold(command, "CLEAR") {
+        fmt.println("[CMD] CLEAR")
+        game.entities = make([dynamic]Entity, 0, 0)
+    }
     if strings.equal_fold(command, "LF") {
         fmt.println("[CMD] LOAD (file)")
         full_level_reset(game, true)
@@ -851,6 +1001,16 @@ execute_console_command :: proc(game: ^Game) {
     else if strings.equal_fold(command, "L") {
         fmt.println("[CMD]: inverse player zone limit")
         zone_limit = !zone_limit
+    }
+    else if strings.equal_fold(command, "DUPS") { // TODO: investigate duplicate IDs with this
+        fmt.println("[CMD]: CHL Duplicates")
+        for i in 0..<len(game.entities) {
+            for j in i+1..<len(game.entities) {
+                if game.entities[i].id == game.entities[j].id {
+                    fmt.printfln("Duplicate entities at ID: %d", game.entities[i].id)
+                }
+            }
+        }
     }
 
     game.console_command = ""
@@ -977,8 +1137,67 @@ send_game_state_to_client :: proc(game: ^Game, client: net.Endpoint) {
     send_struct(game.sock, client, .GAME_STATE, GameState.PLAYING, true)
 }
 
+draw_build_menu :: proc(game: ^Game) {
+    // TODO
+}
+
+draw_cursor :: proc(game: ^Game, camera: ^rl.Camera2D) {
+    interactable, yes := cursor_hovering_interactable(game, camera)
+
+    if yes {
+        point := rl.GetMousePosition()
+        point = rl.GetScreenToWorld2D(point, camera^) 
+
+        rl.HideCursor()
+        rl.DrawTextureEx(interact_cursor_sprite, point,  0, 2, rl.WHITE)
+    }
+    else {
+        rl.ShowCursor()
+    }
+}
+
+cursor_hovering_interactable :: proc(game: ^Game, camera: ^rl.Camera2D) -> (^Entity, bool) {
+    point := rl.GetMousePosition()
+    point = rl.GetScreenToWorld2D(point, camera^) 
+
+    for &e in game.entities {
+        switch &shape in e.shape {
+            case Rectangle:
+                rect := rl.Rectangle{e.pos.x, e.pos.y, shape.size.x, shape.size.y}
+                if !rl.CheckCollisionPointRec(point, rect) do continue
+            case Circle:
+                if !rl.CheckCollisionPointCircle(point, {e.pos.x, e.pos.y}, shape.radius) do continue
+            case Diamond:
+                rect := rl.Rectangle{e.pos.x, e.pos.y, shape.size.x, shape.size.y}
+                if !rl.CheckCollisionPointRec(point, rect) do continue
+        }
+        if  is_interactable(&e) {
+            return &e, true
+        }
+    }
+
+    return {}, false
+}
+
+is_interactable :: proc(e: ^Entity) -> bool {
+    switch &b in e.behaviour {
+        case EBType:
+        case LookAndShoot:
+        case DeathAnimation:
+        case ZombieAttack:
+        case MiningResource:
+        case PickupResource: 
+        case DefensePoint:
+        case EnemySpawner:
+        case Tower:
+            return true
+    }
+
+    return false
+}
+
 main :: proc() {
-    game := Game{{}, .SINGLE, 0, .MAIN_MENU, -1, .NORMAL, make([dynamic]Entity, 0, 0), 0, make([dynamic]string, 0, 0), "", false, 0, false, 0, {}, false, 0, make([dynamic]ClientRef, 0, 0), make([dynamic]SendQueue, 0, 0)}
+    game := Game{{}, {}, .SINGLE, 0, .MAIN_MENU, -1, .NORMAL, make([dynamic]Entity, 0, 0), 0, make([dynamic]string, 0, 0), "", false, 0, false, 0, {}, false, 0, make([dynamic]ClientRef, 0, 0), make([dynamic]SendQueue, 0, 0), false}
 
     rl.SetConfigFlags({rl.ConfigFlag.WINDOW_RESIZABLE})
     rl.InitWindow(1280, 720, "Top Down Shooter")
@@ -1010,10 +1229,14 @@ main :: proc() {
     explosion_texture = rl.LoadTexture(explosion_texture_path)
     explosion_texture_frames = u32(explosion_texture.width / 64)
 
+    interact_cursor_sprite = rl.LoadTexture("assets/interact-cursor.png")
+
     /*** CAMERA ***/
     camera := rl.Camera2D{}
     camera.offset = {1280/2, 720/2}
     camera.zoom = 0.5
+
+    game.camera = &camera
 
     /*** BOX2D Setup ***/
     LENGTH_UNITS_PER_METER :: 256
@@ -1086,6 +1309,31 @@ main :: proc() {
                 }
             case .PLAYING:
                 {
+                    //check player
+                    player, ok := get_entity(&game, game.self)
+                    if !ok {
+                        for &e in game.entities {
+                            switch &b in e.behaviour {
+                                case EBType:
+                                    switch b {
+                                        case .PLAYER:
+                                            game.self = e.id
+                                        case .DYNAMIC_BODY:
+                                        case .STATIC_BODY:
+                                    }
+                                case LookAndShoot:
+                                case DeathAnimation:
+                                case ZombieAttack:
+                                case MiningResource:
+                                case PickupResource:
+                                case DefensePoint:
+                                case EnemySpawner:
+                                case Tower:
+                            }
+                        }
+                    }
+
+
                     rl.BeginMode2D(camera)
 
                     draw_player_border()
@@ -1098,8 +1346,10 @@ main :: proc() {
 
                     if game.self >= 0 {
                         player, ok := get_entity(&game, game.self)
-                        player_pos := player.pos
-                        camera.target = player_pos// + {20, 20}
+                        if ok {
+                            player_pos := player.pos
+                            camera.target = player_pos// + {20, 20}
+                        }
 
                         // camera.zoom = math.exp_f32(math.log2_f32(camera.zoom) + f32(rl.GetMouseWheelMove()*0.1));
                     }
@@ -1142,6 +1392,9 @@ main :: proc() {
                             run_entity(&game, &e)
                         }
                     }
+
+                    draw_build_menu(&game)
+                    draw_cursor(&game, &camera)
 
                     rl.EndMode2D()
                     if game.is_console_open {
@@ -1262,6 +1515,7 @@ handle_net_recv :: proc(net_data: NetData, game: ^Game) {
                     case PickupResource:
                     case DefensePoint:
                     case EnemySpawner:
+                    case Tower:
                 }
             }
         case Ack:
